@@ -1,0 +1,96 @@
+import com.amazonaws.auth.AWSStaticCredentialsProvider;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.regions.Regions;
+import com.amazonaws.services.logs.AWSLogs;
+import com.amazonaws.services.logs.AWSLogsClientBuilder;
+import com.amazonaws.services.logs.model.*;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class QueryLogsExample {
+    public static void main(String[] args) {
+        // Set up AWS credentials
+        BasicAWSCredentials credentials = new BasicAWSCredentials("your-access-key", "your-secret-key");
+
+        // Create AWSLogs client
+        AWSLogs logsClient = AWSLogsClientBuilder.standard()
+                .withCredentials(new AWSStaticCredentialsProvider(credentials))
+                .withRegion(Regions.YOUR_REGION)
+                .build();
+
+        // Retrieve Request IDs from service logs
+        String serviceQuery = "fields @message\n" +
+                "    | filter your-service-log-filter-pattern\n" +
+                "    | parse @message /RequestId: *(.*)/ as requestId\n";
+
+        StartQueryRequest serviceQueryRequest = new StartQueryRequest()
+                .withLogGroupName("your-service-log-group")
+                .withStartTime(System.currentTimeMillis() - 3600000) // One hour ago
+                .withEndTime(System.currentTimeMillis())
+                .withQueryString(serviceQuery);
+
+        StartQueryResult serviceQueryResult = logsClient.startQuery(serviceQueryRequest);
+        String serviceQueryId = serviceQueryResult.getQueryId();
+
+        // Wait for the service log query to complete
+        GetQueryResultsRequest getQueryResultsRequest = new GetQueryResultsRequest().withQueryId(serviceQueryId);
+        while (true) {
+            GetQueryResultsResult queryResultsResult = logsClient.getQueryResults(getQueryResultsRequest);
+            if (queryResultsResult.getStatus().equals("Complete")) {
+                break;
+            }
+            try {
+                Thread.sleep(1000); // Wait for a second before checking again
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+
+        // Get query results and extract request IDs
+        List<String> requestIds = new ArrayList<>();
+        GetQueryResultsResult queryResultsResult = logsClient.getQueryResults(getQueryResultsRequest);
+        for (ResultField field : queryResultsResult.getResults().get(0)) {
+            if ("requestId".equals(field.getField())) {
+                requestIds.add(field.getValue());
+            }
+        }
+
+        // Construct Application Log Query
+        StringBuilder applicationQuery = new StringBuilder("fields @timestamp, @message\n" +
+                "    | filter ");
+        for (String requestId : requestIds) {
+            applicationQuery.append(String.format("requestId = '%s' or ", requestId));
+        }
+        applicationQuery.setLength(applicationQuery.length() - 4); // Remove the trailing " or "
+        applicationQuery.append("\n    | sort @timestamp desc\n" +
+                "    | limit 20\n");
+
+        StartQueryRequest applicationQueryRequest = new StartQueryRequest()
+                .withLogGroupName("your-application-log-group")
+                .withStartTime(System.currentTimeMillis() - 3600000) // One hour ago
+                .withEndTime(System.currentTimeMillis())
+                .withQueryString(applicationQuery.toString());
+
+        StartQueryResult applicationQueryResult = logsClient.startQuery(applicationQueryRequest);
+        String applicationQueryId = applicationQueryResult.getQueryId();
+
+        // Wait for the application log query to complete
+        getQueryResultsRequest.setQueryId(applicationQueryId);
+        while (true) {
+            GetQueryResultsResult queryResultsResult = logsClient.getQueryResults(getQueryResultsRequest);
+            if (queryResultsResult.getStatus().equals("Complete")) {
+                break;
+            }
+            try {
+                Thread.sleep(1000); // Wait for a second before checking again
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+
+        // Get and process query results for application logs
+        queryResultsResult = logsClient.getQueryResults(getQueryResultsRequest);
+        // Process application log results
+    }
+}
